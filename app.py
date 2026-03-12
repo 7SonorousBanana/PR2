@@ -13,7 +13,7 @@ from sklearn.metrics import (
 )
 
 # Налаштування сторінки
-st.set_page_config(page_title="Прогноз опадів", page_icon="🌦️", layout="wide")
+st.set_page_config(page_title="Прогноз опадів", page_icon="", layout="wide")
 st.title("Міні-сервіс прогнозування опадів")
 st.write("Завантаження щоденних метеоданих з Open-Meteo, навчання ML-моделі та прогноз опадів.")
 
