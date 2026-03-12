@@ -22,7 +22,7 @@ DEFAULT_LAT = 50.45
 DEFAULT_LON = 30.52
 CSV_FILENAME = "weather_daily.csv"
 
-
+# Отримання історичних погодних даних (для навчання ML)
 def fetch_weather_data(latitude, longitude, start_date, end_date):
     url = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -44,21 +44,21 @@ def fetch_weather_data(latitude, longitude, start_date, end_date):
         "daily": ",".join(daily_vars),
         "timezone": "auto"
     }
-
+    # HTTP запит до API
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()
 
     if "daily" not in data:
         raise ValueError("У відповіді API немає блоку 'daily'.")
-
+    # перетворюємо отримані дані у DataFrame
     df = pd.DataFrame(data["daily"])
 
     if df.empty:
         raise ValueError("Отримано порожній датафрейм. Перевір дати або координати.")
 
     return df
-
+# Отримання прогнозу погоди на 7 днів (Forecast API)
 def fetch_forecast_data(latitude, longitude):
     """
     Отримує прогноз погоди на найближчі дні з Open-Meteo
@@ -87,23 +87,28 @@ def fetch_forecast_data(latitude, longitude):
     response = requests.get(url, params=params)
     data = response.json()
 
+    # прогноз також переводимо у DataFrame
     df = pd.DataFrame(data["daily"])
 
     return df
-
+# Підготовка даних для машинного навчання
 def prepare_features(df):
     work_df = df.copy()
-
+    
+    # перетворюємо дату у формат datetime
     work_df["time"] = pd.to_datetime(work_df["time"])
     work_df = work_df.sort_values("time").reset_index(drop=True)
-
+    
+    # створення цільової змінної (чи були опади)
     work_df["target"] = (work_df["precipitation_sum"] > 0).astype(int)
-
+    
+    # календарні ознаки
     work_df["month"] = work_df["time"].dt.month
     work_df["day"] = work_df["time"].dt.day
     work_df["dayofyear"] = work_df["time"].dt.dayofyear
     work_df["weekday"] = work_df["time"].dt.weekday
-
+    
+    # значення попереднього дня
     work_df["temp_mean_lag1"] = work_df["temperature_2m_mean"].shift(1)
     work_df["temp_max_lag1"] = work_df["temperature_2m_max"].shift(1)
     work_df["temp_min_lag1"] = work_df["temperature_2m_min"].shift(1)
@@ -111,13 +116,15 @@ def prepare_features(df):
     work_df["rain_sum_lag1"] = work_df["rain_sum"].shift(1)
     work_df["wind_max_lag1"] = work_df["wind_speed_10m_max"].shift(1)
     work_df["gust_max_lag1"] = work_df["wind_gusts_10m_max"].shift(1)
-
+    
+    # середнє за 3 дні
     work_df["temp_mean_roll3"] = work_df["temperature_2m_mean"].rolling(window=3).mean().shift(1)
     work_df["precip_roll3"] = work_df["precipitation_sum"].rolling(window=3).mean().shift(1)
     work_df["rain_roll3"] = work_df["rain_sum"].rolling(window=3).mean().shift(1)
-
+    
     work_df = work_df.dropna().reset_index(drop=True)
 
+    # список ознак для моделі
     feature_cols = [
         "temperature_2m_max",
         "temperature_2m_min",
@@ -146,15 +153,18 @@ def prepare_features(df):
 
     return work_df, X, y, feature_cols
 
-
+# Навчання моделі Random Forest
 def train_model(X, y):
+
+    # розділення даних 80/20
     split_index = int(len(X) * 0.8)
 
     X_train = X.iloc[:split_index]
     X_test = X.iloc[split_index:]
     y_train = y.iloc[:split_index]
     y_test = y.iloc[split_index:]
-
+    
+    # створення моделі
     model = RandomForestClassifier(
         n_estimators=200,
         max_depth=8,
@@ -165,6 +175,7 @@ def train_model(X, y):
 
     y_pred = model.predict(X_test)
 
+    # обчислення метрик
     metrics = {
         "accuracy": accuracy_score(y_test, y_pred),
         "precision": precision_score(y_test, y_pred, zero_division=0),
@@ -176,7 +187,7 @@ def train_model(X, y):
 
     return model, metrics
 
-
+# Функція прогнозу для одного рядка
 def predict_for_row(model, row_features):
     pred = model.predict(row_features)[0]
     proba = None
@@ -184,7 +195,7 @@ def predict_for_row(model, row_features):
         proba = model.predict_proba(row_features)[0][1]
     return pred, proba
 
-
+# Параметри у sidebar
 st.sidebar.header("Параметри")
 
 latitude = st.sidebar.number_input("Широта", value=DEFAULT_LAT, format="%.4f")
@@ -192,6 +203,8 @@ longitude = st.sidebar.number_input("Довгота", value=DEFAULT_LON, format=
 
 start_date = st.sidebar.date_input("Початкова дата", value=pd.to_datetime("2025-01-01"))
 end_date = st.sidebar.date_input("Кінцева дата", value=pd.to_datetime("2025-12-31"))
+
+# Session state — зберігання стану програми
 
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
@@ -207,7 +220,8 @@ if "model" not in st.session_state:
     st.session_state.model = None
 if "metrics" not in st.session_state:
     st.session_state.metrics = None
-
+    
+# отримання даних
 st.subheader("1. Завантаження або отримання даних")
 
 uploaded_file = st.file_uploader("Або завантаж CSV-файл", type=["csv"])
