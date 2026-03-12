@@ -1,10 +1,7 @@
 import requests
 import pandas as pd
-import numpy as np
 import streamlit as st
 
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -16,23 +13,17 @@ from sklearn.metrics import (
 )
 
 # Налаштування сторінки
-st.set_page_config(page_title="Прогноз опадів", page_icon="", layout="wide")
+st.set_page_config(page_title="Прогноз опадів", page_icon="🌦️", layout="wide")
 st.title("Міні-сервіс прогнозування опадів")
 st.write("Завантаження щоденних метеоданих з Open-Meteo, навчання ML-моделі та прогноз опадів.")
 
 # Константи
-
-DEFAULT_LAT = 50.45     # Київ
+DEFAULT_LAT = 50.45
 DEFAULT_LON = 30.52
-
 CSV_FILENAME = "weather_daily.csv"
 
-# Функція завантаження даних
 
 def fetch_weather_data(latitude, longitude, start_date, end_date):
-    """
-    Завантажує щоденні історичні метеодані з Open-Meteo.
-    """
     url = "https://archive-api.open-meteo.com/v1/archive"
 
     daily_vars = [
@@ -41,8 +32,8 @@ def fetch_weather_data(latitude, longitude, start_date, end_date):
         "temperature_2m_mean",
         "precipitation_sum",
         "rain_sum",
-        "windspeed_10m_max",
-        "windgusts_10m_max"
+        "wind_speed_10m_max",
+        "wind_gusts_10m_max"
     ]
 
     params = {
@@ -68,43 +59,63 @@ def fetch_weather_data(latitude, longitude, start_date, end_date):
 
     return df
 
+def fetch_forecast_data(latitude, longitude):
+    """
+    Отримує прогноз погоди на найближчі дні з Open-Meteo
+    """
 
-# Підготовка даних
+    url = "https://api.open-meteo.com/v1/forecast"
+
+    daily_vars = [
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "temperature_2m_mean",
+        "precipitation_sum",
+        "rain_sum",
+        "wind_speed_10m_max",
+        "wind_gusts_10m_max"
+    ]
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "daily": ",".join(daily_vars),
+        "forecast_days": 7,
+        "timezone": "auto"
+    }
+
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    df = pd.DataFrame(data["daily"])
+
+    return df
 
 def prepare_features(df):
-    """
-    Підготовка ознак і цільової змінної.
-    Ціль: precipitation_sum > 0 => 1, інакше 0
-    """
     work_df = df.copy()
 
     work_df["time"] = pd.to_datetime(work_df["time"])
     work_df = work_df.sort_values("time").reset_index(drop=True)
 
-    # Цільова змінна
     work_df["target"] = (work_df["precipitation_sum"] > 0).astype(int)
 
-    # Календарні ознаки
     work_df["month"] = work_df["time"].dt.month
     work_df["day"] = work_df["time"].dt.day
     work_df["dayofyear"] = work_df["time"].dt.dayofyear
     work_df["weekday"] = work_df["time"].dt.weekday
 
-    # Лагові ознаки (на основі попереднього дня)
     work_df["temp_mean_lag1"] = work_df["temperature_2m_mean"].shift(1)
     work_df["temp_max_lag1"] = work_df["temperature_2m_max"].shift(1)
     work_df["temp_min_lag1"] = work_df["temperature_2m_min"].shift(1)
     work_df["precip_sum_lag1"] = work_df["precipitation_sum"].shift(1)
     work_df["rain_sum_lag1"] = work_df["rain_sum"].shift(1)
-    work_df["wind_max_lag1"] = work_df["windspeed_10m_max"].shift(1)
-    work_df["gust_max_lag1"] = work_df["windgusts_10m_max"].shift(1)
+    work_df["wind_max_lag1"] = work_df["wind_speed_10m_max"].shift(1)
+    work_df["gust_max_lag1"] = work_df["wind_gusts_10m_max"].shift(1)
 
-    # Ознаки ковзного середнього
     work_df["temp_mean_roll3"] = work_df["temperature_2m_mean"].rolling(window=3).mean().shift(1)
     work_df["precip_roll3"] = work_df["precipitation_sum"].rolling(window=3).mean().shift(1)
     work_df["rain_roll3"] = work_df["rain_sum"].rolling(window=3).mean().shift(1)
 
-    # Видаляємо рядки з NaN після shift/rolling
     work_df = work_df.dropna().reset_index(drop=True)
 
     feature_cols = [
@@ -112,8 +123,8 @@ def prepare_features(df):
         "temperature_2m_min",
         "temperature_2m_mean",
         "rain_sum",
-        "windspeed_10m_max",
-        "windgusts_10m_max",
+        "wind_speed_10m_max",
+        "wind_gusts_10m_max",
         "month",
         "day",
         "dayofyear",
@@ -136,13 +147,7 @@ def prepare_features(df):
     return work_df, X, y, feature_cols
 
 
-# Навчання моделі
-
-def train_model(X, y, model_name="RandomForest"):
-    """
-    Навчання моделі та повернення метрик.
-    """
-    # Для часових даних краще не перемішувати
+def train_model(X, y):
     split_index = int(len(X) * 0.8)
 
     X_train = X.iloc[:split_index]
@@ -150,27 +155,15 @@ def train_model(X, y, model_name="RandomForest"):
     y_train = y.iloc[:split_index]
     y_test = y.iloc[split_index:]
 
-    if len(X_train) == 0 or len(X_test) == 0:
-        raise ValueError("Недостатньо даних для train/test. Збільш період.")
-
-    if model_name == "LogisticRegression":
-        model = LogisticRegression(max_iter=1000)
-    else:
-        model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=8,
-            random_state=42,
-            class_weight="balanced"
-        )
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=8,
+        random_state=42
+    )
 
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
-
-    if hasattr(model, "predict_proba"):
-        y_proba = model.predict_proba(X_test)[:, 1]
-    else:
-        y_proba = None
 
     metrics = {
         "accuracy": accuracy_score(y_test, y_pred),
@@ -181,11 +174,8 @@ def train_model(X, y, model_name="RandomForest"):
         "classification_report": classification_report(y_test, y_pred, zero_division=0)
     }
 
-    return model, metrics, X_train, X_test, y_train, y_test, y_pred, y_proba
+    return model, metrics
 
-
-
-# Прогноз для вибраного рядка
 
 def predict_for_row(model, row_features):
     pred = model.predict(row_features)[0]
@@ -195,8 +185,6 @@ def predict_for_row(model, row_features):
     return pred, proba
 
 
-# Сайдбар
-
 st.sidebar.header("Параметри")
 
 latitude = st.sidebar.number_input("Широта", value=DEFAULT_LAT, format="%.4f")
@@ -205,36 +193,20 @@ longitude = st.sidebar.number_input("Довгота", value=DEFAULT_LON, format=
 start_date = st.sidebar.date_input("Початкова дата", value=pd.to_datetime("2025-01-01"))
 end_date = st.sidebar.date_input("Кінцева дата", value=pd.to_datetime("2025-12-31"))
 
-model_name = st.sidebar.selectbox(
-    "Оберіть модель",
-    ["RandomForest", "LogisticRegression"]
-)
-
-# Стан сесії
-
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
-
 if "prepared_df" not in st.session_state:
     st.session_state.prepared_df = None
-
 if "X" not in st.session_state:
     st.session_state.X = None
-
 if "y" not in st.session_state:
     st.session_state.y = None
-
 if "feature_cols" not in st.session_state:
     st.session_state.feature_cols = None
-
 if "model" not in st.session_state:
     st.session_state.model = None
-
 if "metrics" not in st.session_state:
     st.session_state.metrics = None
-
-
-# Блок 1. Завантаження даних
 
 st.subheader("1. Завантаження або отримання даних")
 
@@ -267,9 +239,6 @@ with col2:
 if st.session_state.raw_df is not None:
     st.write(f"Кількість рядків у датасеті: **{len(st.session_state.raw_df)}**")
 
-
-# Блок 2. Підготовка даних
-
 st.subheader("2. Підготовка даних")
 
 if st.session_state.raw_df is not None:
@@ -291,9 +260,6 @@ if st.session_state.raw_df is not None:
     except Exception as e:
         st.error(f"Помилка підготовки даних: {e}")
 
-
-# Блок 3. Навчання моделі
-
 st.subheader("3. Навчання моделі та метрики")
 
 if st.button("Навчити модель"):
@@ -301,10 +267,9 @@ if st.button("Навчити модель"):
         st.warning("Спочатку отримай або завантаж дані.")
     else:
         try:
-            model, metrics, X_train, X_test, y_train, y_test, y_pred, y_proba = train_model(
+            model, metrics = train_model(
                 st.session_state.X,
-                st.session_state.y,
-                model_name=model_name
+                st.session_state.y
             )
 
             st.session_state.model = model
@@ -314,7 +279,7 @@ if st.button("Навчити модель"):
             c1.metric("Accuracy", f"{metrics['accuracy']:.3f}")
             c2.metric("Precision", f"{metrics['precision']:.3f}")
             c3.metric("Recall", f"{metrics['recall']:.3f}")
-            c4.metric("F1-score(Precision/Recall)", f"{metrics['f1']:.3f}")
+            c4.metric("F1-score", f"{metrics['f1']:.3f}")
 
             st.write("**Confusion Matrix:**")
             st.write(metrics["confusion_matrix"])
@@ -326,44 +291,68 @@ if st.button("Навчити модель"):
         except Exception as e:
             st.error(f"Помилка навчання моделі: {e}")
 
-# Блок 4. Прогноз
+st.subheader("4. Прогноз опадів на 7 днів")
 
-st.subheader("4. Прогноз опадів")
+if st.session_state.model is not None:
 
-if st.session_state.prepared_df is not None and st.session_state.model is not None:
-    prepared_df = st.session_state.prepared_df
-    feature_cols = st.session_state.feature_cols
+    if st.button("Отримати прогноз на 7 днів"):
 
-    prediction_mode = st.radio(
-        "Режим прогнозу",
-        ["Для останнього доступного дня в датасеті", "Для конкретного дня з датасету"]
-    )
+        try:
 
-    if prediction_mode == "Для останнього доступного дня в датасеті":
-        selected_index = len(prepared_df) - 1
-    else:
-        date_options = prepared_df["time"].dt.strftime("%Y-%m-%d").tolist()
-        selected_date = st.selectbox("Оберіть дату", date_options)
-        selected_index = prepared_df[prepared_df["time"].dt.strftime("%Y-%m-%d") == selected_date].index[0]
+            forecast_df = fetch_forecast_data(latitude, longitude)
 
-    if st.button("Зробити прогноз"):
-        row = prepared_df.loc[selected_index]
-        row_features = pd.DataFrame([row[feature_cols]])
+            results = []
 
-        pred, proba = predict_for_row(st.session_state.model, row_features)
+            for i in range(len(forecast_df)):
 
-        st.write(f"Дата: **{row['time'].date()}**")
+                row = forecast_df.iloc[i]
+                date = pd.to_datetime(row["time"])
 
-        if pred == 1:
-            st.success("Очікуються опади")
-        else:
-            st.info("Опадів не очікується")
+                features = pd.DataFrame([{
+                    "temperature_2m_max": row["temperature_2m_max"],
+                    "temperature_2m_min": row["temperature_2m_min"],
+                    "temperature_2m_mean": row["temperature_2m_mean"],
+                    "rain_sum": row["rain_sum"],
+                    "wind_speed_10m_max": row["wind_speed_10m_max"],
+                    "wind_gusts_10m_max": row["wind_gusts_10m_max"],
+                    "month": date.month,
+                    "day": date.day,
+                    "dayofyear": date.dayofyear,
+                    "weekday": date.weekday(),
 
-        if proba is not None:
-            st.write(f"Ймовірність опадів: **{proba:.2%}**")
+                    "temp_mean_lag1": row["temperature_2m_mean"],
+                    "temp_max_lag1": row["temperature_2m_max"],
+                    "temp_min_lag1": row["temperature_2m_min"],
+                    "precip_sum_lag1": row["precipitation_sum"],
+                    "rain_sum_lag1": row["rain_sum"],
+                    "wind_max_lag1": row["wind_speed_10m_max"],
+                    "gust_max_lag1": row["wind_gusts_10m_max"],
+                    "temp_mean_roll3": row["temperature_2m_mean"],
+                    "precip_roll3": row["precipitation_sum"],
+                    "rain_roll3": row["rain_sum"]
+                }])
 
-        st.write("Ознаки для прогнозу:")
-        st.dataframe(row_features, use_container_width=True)
+                pred, proba = predict_for_row(st.session_state.model, features)
+
+                if pred == 1:
+                    text = "Очікуються опади"
+                else:
+                    text = "Опадів не очікується"
+
+                results.append({
+                    "Дата": date.date(),
+                    "Прогноз": text,
+                    "Ймовірність опадів": f"{proba:.2%}"
+                })
+
+            result_df = pd.DataFrame(results)
+
+            st.success("Прогноз на 7 днів:")
+
+            st.dataframe(result_df, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Помилка прогнозу: {e}")
 
 else:
-    st.info("Щоб зробити прогноз, спочатку завантаж дані та навчи модель.")
+    st.info("Спочатку потрібно навчити модель.")
